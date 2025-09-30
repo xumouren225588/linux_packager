@@ -16,7 +16,7 @@ on:
           - bullseye
           - bookworm
           - trixie
-          - sid
+          - testing
       architecture:
         description: '请选择架构'
         required: true
@@ -97,7 +97,7 @@ jobs:
       - name: Run lb config to generate configuration files
         run: |
           cd /live-build
-          lb config --distribution trixie --debian-installer live --debian-installer-gui true
+          lb config --distribution testing --debian-installer live --debian-installer-gui true
       - name: Add custom packages to packages.list (if provided)
         run: |
           cd /live-build
@@ -108,7 +108,7 @@ jobs:
         run: |
           cd /live-build
           lb build
-          echo "VER=$(date +'%Y%m%d')_debian_latest">>$GITHUB_ENV
+          echo "VER=$(date +'%Y%m%d')_debian_testing">>$GITHUB_ENV
 
       - name: Create and upload Release
         uses: softprops/action-gh-release@v1
@@ -136,7 +136,7 @@ jobs:
             tag="v${{ github.run_number }}_debian_${{ github.event.inputs.debian_version }}_${{ github.event.inputs.architecture }}"
             arch=${{ github.event.inputs.architecture }}
           else
-            tag="$(date +'%Y%m%d')_debian_latest"
+            tag="$(date +'%Y%m%d')_debian_testing"
             arch="amd64"
           fi
           echo "TAG=$tag" >> $GITHUB_OUTPUT
