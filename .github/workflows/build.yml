@@ -121,43 +121,43 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   
-  download_to_123pan:
-    name: Push ISO to 123Pan via proxy
-    runs-on: ubuntu-latest          # 不用容器，避免权限/工具问题
-    needs:                        # 等 ISO 上传完再启动
-      - build_manual
-      - build_scheduled
-    if: always() && (needs.build_manual.result == 'success' || needs.build_scheduled.result == 'success')
-    steps:
-      - name: Get release tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="v${{ github.run_number }}_debian_${{ github.event.inputs.debian_version }}_${{ github.event.inputs.architecture }}"
-            arch=${{ github.event.inputs.architecture }}
-          else
-            tag="$(date +'%Y%m%d')_debian_testing"
-            arch="amd64"
-          fi
-          echo "TAG=$tag" >> $GITHUB_OUTPUT
-          echo "ARCH=$arch" >> $GITHUB_OUTPUT
+  # download_to_123pan:
+  #   name: Push ISO to 123Pan via proxy
+  #   runs-on: ubuntu-latest          # 不用容器，避免权限/工具问题
+  #   needs:                        # 等 ISO 上传完再启动
+  #     - build_manual
+  #     - build_scheduled
+  #   if: always() && (needs.build_manual.result == 'success' || needs.build_scheduled.result == 'success')
+  #   steps:
+  #     - name: Get release tag
+  #       id: tag
+  #       run: |
+  #         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+  #           tag="v${{ github.run_number }}_debian_${{ github.event.inputs.debian_version }}_${{ github.event.inputs.architecture }}"
+  #           arch=${{ github.event.inputs.architecture }}
+  #         else
+  #           tag="$(date +'%Y%m%d')_debian_testing"
+  #           arch="amd64"
+  #         fi
+  #         echo "TAG=$tag" >> $GITHUB_OUTPUT
+  #         echo "ARCH=$arch" >> $GITHUB_OUTPUT
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+  #     - name: Install jq
+  #       run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch ISO download link
-        id: link
-        run: |
-          tag="${{ steps.tag.outputs.TAG }}"
-          echo "ISO_URL=https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/$tag/live-image-${{ steps.tag.outputs.ARCH }}.hybrid.iso" >> $GITHUB_OUTPUT
-          echo "FILE_NAME=${{ steps.tag.outputs.TAG }}.iso"   >> $GITHUB_OUTPUT
+  #     - name: Fetch ISO download link
+  #       id: link
+  #       run: |
+  #         tag="${{ steps.tag.outputs.TAG }}"
+  #         echo "ISO_URL=https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/$tag/live-image-${{ steps.tag.outputs.ARCH }}.hybrid.iso" >> $GITHUB_OUTPUT
+  #         echo "FILE_NAME=${{ steps.tag.outputs.TAG }}.iso"   >> $GITHUB_OUTPUT
 
-      - name: Trigger 123Pan offline download
-        run: |
-          curl -X POST "https://open-api.123pan.com/api/v1/offline/download" \
-            -H "Authorization: Bearer ${{ secrets.PAN123_API_TOKEN }}" \
-            -H "Platform: open_platform" \
-            -H "Content-Type: application/json" \
-            -d "{\"url\":\"${{ steps.link.outputs.ISO_URL }}\",
-                 \"dirID\": ${{ secrets.PAN123_FOLDER_ID }},
-                 \"fileName\":\"${{ steps.link.outputs.FILE_NAME }}\"}"
+  #     - name: Trigger 123Pan offline download
+  #       run: |
+  #         curl -X POST "https://open-api.123pan.com/api/v1/offline/download" \
+  #           -H "Authorization: Bearer ${{ secrets.PAN123_API_TOKEN }}" \
+  #           -H "Platform: open_platform" \
+  #           -H "Content-Type: application/json" \
+  #           -d "{\"url\":\"${{ steps.link.outputs.ISO_URL }}\",
+  #                \"dirID\": ${{ secrets.PAN123_FOLDER_ID }},
+  #                \"fileName\":\"${{ steps.link.outputs.FILE_NAME }}\"}"
