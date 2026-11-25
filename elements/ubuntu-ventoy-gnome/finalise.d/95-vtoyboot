@@ -1,0 +1,102 @@
+#!/bin/bash
+# 安装 Ventoy 官方 vtoyboot：向 initramfs / grub 注入 vDisk 启动钩子。
+#
+# 载荷优先取自本元素 data 目录（scripts/fetch-vtoyboot.sh 预先下载）。
+# DIB 会把元素的 data/ 内容复制到镜像内的 /dib/<element>/，因此构建期不必
+# 再访问 GitHub API；没有预置载荷时才退回在线下载。
+#
+# vtoyboot 的设计前提是"运行在已真实启动的系统里"。在 DIB 的 chroot 内，
+# 根设备信息来自构建机，脚本有可能判定失败。为了不让 CI 整条链路挂掉，这里
+# 采用两段式：构建期先试跑；不成功则装一个首启动一次性服务，在 Ventoy 上
+# 第一次真实启动时自动补齐钩子。
+set -uo pipefail
+
+# DIB 会把元素下的一级子目录复制进 hooks 目录，并把整个 hooks 目录以只读
+# bind-mount 挂到 chroot 的 /tmp/in_target.d（见 lib/img-functions 的
+# run_d_in_target）。因此本元素的 ventoy-data/ 载荷在镜像内的固定路径是
+# /tmp/in_target.d/ventoy-data/。
+DATA_DIR=/tmp/in_target.d/ventoy-data
+INSTALL_DIR=/usr/local/share/vtoyboot
+VERSION=${DIB_VTOYBOOT_VERSION:-latest}
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+TARBALL=""
+if [ -f "${DATA_DIR}/vtoyboot.tar.gz" ]; then
+    TARBALL=${DATA_DIR}/vtoyboot.tar.gz
+    echo "使用构建机预置的 vtoyboot 载荷: $TARBALL"
+else
+    echo "未找到预置载荷，尝试在线下载 vtoyboot (${VERSION})"
+    if [ "$VERSION" = "latest" ]; then
+        URL=$(curl -sSL https://api.github.com/repos/ventoy/vtoyboot/releases/latest \
+              | grep -o 'https://[^"]*\.tar\.gz' | head -n1)
+    else
+        URL="https://github.com/ventoy/vtoyboot/releases/download/${VERSION}/vtoyboot-${VERSION}.tar.gz"
+    fi
+    if [ -n "${URL:-}" ]; then
+        curl -fL --retry 3 -o "$WORK/vtoyboot.tar.gz" "$URL" && TARBALL=$WORK/vtoyboot.tar.gz
+    fi
+fi
+
+if [ -n "$TARBALL" ] && tar -C "$WORK" -xzf "$TARBALL"; then
+    SRC=$(find "$WORK" -maxdepth 1 -type d -name 'vtoyboot*' | head -n1)
+    if [ -n "$SRC" ]; then
+        mkdir -p "$INSTALL_DIR"
+        cp -a "$SRC"/. "$INSTALL_DIR"/
+    fi
+fi
+
+ran_ok=0
+if [ -f "$INSTALL_DIR/vtoyboot.sh" ]; then
+    ( cd "$INSTALL_DIR" && bash ./vtoyboot.sh ) && ran_ok=1
+fi
+
+if [ "$ran_ok" = "1" ]; then
+    echo "vtoyboot 已在构建期内执行完成"
+    : > /etc/vtoyboot.done
+    exit 0
+fi
+
+echo "WARN: 构建期内执行 vtoyboot 未成功，改由首次真实启动时执行" >&2
+
+cat > /usr/local/sbin/vtoyboot-firstboot <<'FIRST_EOF'
+#!/bin/bash
+set -uo pipefail
+[ -f /etc/vtoyboot.done ] && exit 0
+DIR=/usr/local/share/vtoyboot
+if [ ! -f "$DIR/vtoyboot.sh" ]; then
+    echo "vtoyboot 载荷缺失，请手动下载后运行 $DIR/vtoyboot.sh" >&2
+    exit 0
+fi
+if ( cd "$DIR" && bash ./vtoyboot.sh ); then
+    : > /etc/vtoyboot.done
+    systemctl reboot || true
+else
+    echo "vtoyboot 执行失败，可手动运行 $DIR/vtoyboot.sh 后重启" >&2
+    exit 1
+fi
+FIRST_EOF
+chmod 0755 /usr/local/sbin/vtoyboot-firstboot
+
+cat > /etc/systemd/system/vtoyboot-firstboot.service <<'UNIT_EOF'
+[Unit]
+Description=Run Ventoy vtoyboot hooks on first boot
+ConditionPathExists=!/etc/vtoyboot.done
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vtoyboot-firstboot
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+# chroot 内 systemctl enable 未必可用，直接建 wants 软链
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sfn /etc/systemd/system/vtoyboot-firstboot.service \
+    /etc/systemd/system/multi-user.target.wants/vtoyboot-firstboot.service
+exit 0

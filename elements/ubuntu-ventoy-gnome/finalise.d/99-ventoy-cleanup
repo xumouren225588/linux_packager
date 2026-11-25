@@ -1,0 +1,23 @@
+#!/bin/bash
+# 收尾清理。固定大小 VHD 里未使用区域会以零填充，镜像内先清干净，
+# 最终压缩后的工件就小得多，上传也更快。
+set -eu
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get --purge autoremove -y >/dev/null 2>&1 || true
+apt-get clean || true
+rm -rf /var/lib/apt/lists/* || true
+
+rm -rf /var/crash/* /var/tmp/* 2>/dev/null || true
+find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) -delete 2>/dev/null || true
+: > /var/log/syslog 2>/dev/null || true
+: > /var/log/kern.log 2>/dev/null || true
+
+# 抹掉机器指纹，保证每次从 vDisk 启动的实例都有独立身份
+rm -f /var/lib/dbus/machine-id 2>/dev/null || true
+: > /etc/machine-id 2>/dev/null || true
+rm -rf /root/.cache /home/*/.cache 2>/dev/null || true
+
+command -v fstrim >/dev/null 2>&1 && fstrim -av >/dev/null 2>&1
+exit 0

@@ -1,0 +1,27 @@
+# 声明式包安装：由 package-installs 元素在 install.d 阶段统一交给 apt 处理，
+# 比在 finalise.d 里手写 apt 命令更符合 DIB 的分层约定。
+#
+# when 条件引用的变量必须在镜像定义的 environment 中显式存在，否则 DIB 会直接
+# 抛异常；因此 config/ubuntu-ventoy.yaml.in 里始终设置 DIB_VENTOY_DESKTOP。
+
+# --- 基础 ---
+ca-certificates: null
+curl: null
+linux-image-generic: null
+linux-modules-extra-generic: null
+landscape-common:
+  uninstall: true
+
+# --- GNOME（默认，ubuntu-desktop-minimal = GNOME Shell + gdm3 依赖链）---
+ubuntu-desktop-minimal:
+  when: DIB_VENTOY_DESKTOP = gnome
+gdm3:
+  when: DIB_VENTOY_DESKTOP = gnome
+
+# --- Xfce（可选，镜像体积明显更小）---
+xfce4:
+  when: DIB_VENTOY_DESKTOP = xfce
+xfce4-goodies:
+  when: DIB_VENTOY_DESKTOP = xfce
+lightdm:
+  when: DIB_VENTOY_DESKTOP = xfce

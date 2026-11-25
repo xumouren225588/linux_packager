@@ -1,0 +1,23 @@
+# 构建产物与中间目录
+.build/
+dist/
+.venv-dib/
+.cache-dib/
+
+# 离线载荷
+elements/*/ventoy-data/*.tar.gz
+elements/*/ventoy-data/*.iso
+
+# 镜像工件
+*.vhd
+*.vhdx
+*.vhd.vtoy
+*.qcow2
+*.raw
+*.zst
+*.xz
+*.part-*
+
+__pycache__/
+*.pyc
+.DS_Store

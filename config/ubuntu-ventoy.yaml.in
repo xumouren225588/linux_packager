@@ -1,0 +1,43 @@
+# =============================================================================
+# diskimage-builder 镜像定义模板（Ubuntu 桌面 / Ventoy Linux vDisk）
+#
+# 本文件是模板。先渲染再构建：
+#     bash scripts/render-config.sh && sudo -E bash scripts/build-image.sh
+# 渲染结果写入 .build/ubuntu-ventoy.yaml。
+#
+# 占位符：${IMAGENAME} ${IMAGE_SIZE} ${DIB_RELEASE} ${DIB_VENTOY_DESKTOP}
+#         ${DIB_DEV_USER_USERNAME} ${DIB_DEV_USER_PASSWORD} ${ELEMENTS_PATH}
+#
+# 几个容易踩的坑（都是相对常见错误写法的关键修正）：
+#   1. YAML 里指定输出格式用 types（列表）。不存在 image-type 这个键，
+#      写成 image-type 会被 diskimage-builder 判为非法定义直接报错。
+#   2. YAML 定义要用包装命令 diskimage-builder xxx.yaml 构建；
+#      disk-image-create 没有 -c/--config 选项。
+#   3. BIOS Boot + ESP 由官方 block-device-gpt 元素提供，
+#      Legacy BIOS 与 UEFI 两种引导方式都能覆盖（Ventoy vDisk 两种都可能用到）。
+#   4. 这里产出的 VHD 是动态扩展格式；Ventoy 的 Linux vDisk 插件只认固定大小，
+#      固定化与 .vtoy 重命名由 scripts/postprocess.sh 完成。
+# =============================================================================
+
+- imagename: ${IMAGENAME}
+  types: ["vhd"]
+  image-size: ${IMAGE_SIZE}        # 单位 GB，整盘大小（含 BIOS Boot / ESP / root）
+  arch: amd64
+  no-tmpfs: true                   # 桌面镜像构建期内存吃紧，禁用 tmpfs 加速层
+  checksum: true                   # 顺带产出 .md5 / .sha256，便于交付校验
+  elements:
+    - ubuntu-minimal               # debootstrap 构建的最小 rootfs
+    - vm                           # 整盘镜像：引导器、内核、cloud-init 等
+    - block-device-gpt             # GPT 布局（BIOS Boot + ESP + root）
+    - dhcp-all-interfaces          # 所有网卡默认 DHCP，裸机即插即用
+    - devuser                      # 创建可登录的普通用户
+    - ubuntu-ventoy-gnome          # 本仓库自定义元素：桌面 + vtoyboot 钩子
+  environment:
+    DIB_RELEASE: "${DIB_RELEASE}"                    # noble=24.04 / jammy=22.04
+    DIB_DEBIAN_COMPONENTS: "main,restricted,universe,multiverse"
+    DIB_VENTOY_DESKTOP: "${DIB_VENTOY_DESKTOP}"      # gnome / xfce / none
+    DIB_DEV_USER_USERNAME: "${DIB_DEV_USER_USERNAME}"
+    DIB_DEV_USER_PASSWORD: "${DIB_DEV_USER_PASSWORD}"
+    DIB_DEV_USER_PWDLESS_SUDO: "1"
+    DIB_DEV_USER_SHELL: "/bin/bash"
+    ELEMENTS_PATH: "${ELEMENTS_PATH}"                # 指向本仓库 elements/ 目录

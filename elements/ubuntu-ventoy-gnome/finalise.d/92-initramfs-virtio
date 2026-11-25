@@ -1,0 +1,15 @@
+#!/bin/bash
+# Ventoy 把 vDisk 文件映射成 virtio 块设备交给内核，根文件系统就在上面。
+# initramfs 若没内置 virtio_blk / virtio_pci，真实启动时直接找不到根盘。
+set -eu
+
+MODS=/etc/initramfs-tools/modules
+[ -f "$MODS" ] || exit 0
+
+for m in virtio_blk virtio_pci virtio_scsi virtio_net ext4 vfat; do
+    grep -qxE "$m" "$MODS" 2>/dev/null || echo "$m" >> "$MODS"
+done
+
+if command -v update-initramfs >/dev/null 2>&1; then
+    update-initramfs -u -k all || update-initramfs -u || true
+fi

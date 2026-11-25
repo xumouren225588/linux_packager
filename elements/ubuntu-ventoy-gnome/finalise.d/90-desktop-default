@@ -1,0 +1,21 @@
+#!/bin/bash
+# 把图形界面设为默认启动目标。chroot 里没有 systemd 在跑，直接落 symlink，
+# 不用 systemctl set-default（在 chroot 中可能失败）。
+set -eu
+
+[ "${DIB_VENTOY_DESKTOP:-gnome}" = "none" ] && exit 0
+
+TARGET=/lib/systemd/system/multi-user.target
+if [ -f /usr/bin/gnome-shell ] || [ "${DIB_VENTOY_DESKTOP:-gnome}" = "gnome" ]; then
+    TARGET=/lib/systemd/system/graphical.target
+fi
+
+if [ -f "$TARGET" ]; then
+    ln -sfn "$TARGET" /etc/systemd/system/default.target
+    echo "default.target -> $TARGET"
+else
+    echo "WARN: $TARGET 不存在，保持默认启动目标" >&2
+fi
+
+# 需要 GDM 自动登录时取消注释（配合 devuser 的用户名）
+# sed -i 's|^#\?AutomaticLogin=.*|AutomaticLogin=user|' /etc/gdm3/custom.conf

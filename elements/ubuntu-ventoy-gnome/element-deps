@@ -1,0 +1,5 @@
+ubuntu-minimal
+vm
+block-device-gpt
+package-installs
+devuser
