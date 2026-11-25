@@ -1,0 +1,222 @@
+name: Build Ventoy vDisk image
+
+# 触发方式：
+#   1) Actions 页面手动触发（可调全部参数）
+#   2) 推送 v* 标签（用默认参数：noble / gnome / 20GB / zstd / 上传 artifact）
+#
+# 产物：<imagename>.vhd.vtoy（固定大小 VHD，Ventoy Linux vDisk 插件要求）
+#       以及压缩后的工件 + sha256 校验和 + 可选分卷。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_release:
+        description: Ubuntu 版本代号
+        type: choice
+        default: noble
+        options: [noble, jammy]
+      desktop:
+        description: 桌面环境
+        type: choice
+        default: gnome
+        options: [gnome, xfce, none]
+      image_size:
+        description: 整盘大小（GB）。最终是固定大小 VHD，直接决定工件体积
+        type: string
+        default: "20"
+      vtoyboot_version:
+        description: vtoyboot 版本（latest 或形如 1.0.42）
+        type: string
+        default: latest
+      compression:
+        description: 工件压缩方式
+        type: choice
+        default: zstd
+        options: [zstd, xz, none]
+      split_size_mb:
+        description: 分卷大小（MiB），0 表示不分卷
+        type: string
+        default: "0"
+      upload_target:
+        description: 工件投递方式
+        type: choice
+        default: artifact
+        options: [artifact, release, none]
+      release_tag:
+        description: upload_target=release 时的目标 tag（留空则用触发 ref）
+        type: string
+        default: ""
+      retention_days:
+        description: artifact 保留天数
+        type: string
+        default: "7"
+      runner:
+        description: 构建用 runner 标签（自建 runner 填对应 label）
+        type: string
+        default: ubuntu-24.04
+      dib_version:
+        description: diskimage-builder 版本（留空=latest，复现构建时钉版本）
+        type: string
+        default: ""
+  push:
+    tags: ["v*"]
+
+# upload_target=release 需要写权限；只用 artifact 时可把 contents 改回 read
+permissions:
+  contents: write
+
+concurrency:
+  group: ventoy-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DIB_VENV: ${{ github.workspace }}/.venv-dib
+  BUILD_DIR: ${{ github.workspace }}/.build
+  UBUNTU_RELEASE: ${{ inputs.ubuntu_release || 'noble' }}
+  DESKTOP: ${{ inputs.desktop || 'gnome' }}
+  IMAGE_SIZE: ${{ inputs.image_size || '20' }}
+  VTOYBOOT_VERSION: ${{ inputs.vtoyboot_version || 'latest' }}
+  COMPRESSION: ${{ inputs.compression || 'zstd' }}
+  SPLIT_MB: ${{ inputs.split_size_mb || '0' }}
+  UPLOAD_TARGET: ${{ inputs.upload_target || 'artifact' }}
+  DIB_VERSION: ${{ inputs.dib_version || '' }}
+  RETENTION_DAYS: ${{ inputs.retention_days || '7' }}
+  # 镜像内账号：建议建 Repository Secrets（VENTOY_USERNAME / VENTOY_PASSWORD）
+  # 覆盖默认值；未配置时脚本回落到 user / 1234，方便先跑通再收紧。
+  DEV_USERNAME: ${{ secrets.VENTOY_USERNAME || 'user' }}
+  DEV_PASSWORD: ${{ secrets.VENTOY_PASSWORD || '1234' }}
+
+jobs:
+  build:
+    name: Build Ventoy vDisk
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner environment
+        run: |
+          echo "runner: $(lsb_release -ds)  kernel: $(uname -r)"
+          echo "cpu: $(nproc)  mem: $(free -g | awk 'NR==2{print $2}')GB"
+          df -h / "$RUNNER_TEMP" 2>/dev/null || df -h /
+          loop_max=$(cat /sys/module/loop/parameters/max_loop 2>/dev/null || echo n/a)
+          echo "loop 设备上限: $loop_max"
+          command -v qemu-img && qemu-img --version | head -1
+
+      - name: Free up disk space
+        run: sudo bash scripts/free-disk-space.sh
+
+      - name: Install build dependencies
+        run: bash scripts/install-deps.sh
+
+      - name: Fetch vtoyboot payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-vtoyboot.sh "$VTOYBOOT_VERSION"
+
+      - name: Render image definition
+        run: |
+          bash scripts/render-config.sh
+          echo "--- 渲染结果 ---"
+          cat "$BUILD_DIR/ubuntu-ventoy.yaml"
+
+      - name: Validate definition (dry-run)
+        run: |
+          export DIB_VENV
+          sudo -E env "PATH=$PATH" "DIB_VENV=$DIB_VENV" "BUILD_DIR=$BUILD_DIR" \
+            DRY_RUN=1 bash scripts/build-image.sh | tail -n 5
+
+      - name: Build image with diskimage-builder
+        run: |
+          sudo -E env "PATH=$PATH" "HOME=$HOME" "BUILD_DIR=$BUILD_DIR" \
+            "DIB_VENV=$DIB_VENV" bash scripts/build-image.sh
+
+      - name: Convert to fixed-size VHD + .vtoy
+        run: |
+          src=$(ls -1 "$BUILD_DIR"/out/*.vhd | head -n1)
+          echo "DIB 原始产物: $src"
+          bash scripts/postprocess.sh "$src" "$BUILD_DIR/out"
+
+      - name: Pack artifact
+        id: pack
+        run: |
+          dst=$(ls -1 "$BUILD_DIR"/out/*.vhd.vtoy | head -n1)
+          bash scripts/pack-artifact.sh "$dst" "$BUILD_DIR/out/dist"
+          mv "$BUILD_DIR/out/dist" "$GITHUB_WORKSPACE/dist"
+          echo "dist=$GITHUB_WORKSPACE/dist" >> "$GITHUB_OUTPUT"
+          du -sh "$GITHUB_WORKSPACE/dist"
+
+      - name: Collect metadata for summary
+        id: meta
+        run: |
+          vtoy=$(ls -1 "$BUILD_DIR"/out/*.vhd.vtoy | head -n1)
+          {
+            echo "flavor=${DESKTOP}"
+            echo "release=${UBUNTU_RELEASE}"
+            echo "raw_vhd_bytes=$(stat -c %s "$vtoy")"
+            echo "vtoy_name=$(basename "$vtoy")"
+          } >> "$GITHUB_OUTPUT"
+          echo "=== 固定大小 VHD 信息 ==="
+          qemu-img info "$vtoy"
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Ventoy vDisk 构建结果"
+            echo
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| Ubuntu | ${{ steps.meta.outputs.release }} |"
+            echo "| 桌面 | ${{ steps.meta.outputs.flavor }} |"
+            echo "| 整盘大小 | ${IMAGE_SIZE} GB |"
+            echo "| vtoyboot | ${VTOYBOOT_VERSION} |"
+            echo "| 交付文件 | \`${{ steps.meta.outputs.vtoy_name }}\` |"
+            echo "| 未压缩体积 | $(numfmt --to=iec ${{ steps.meta.outputs.raw_vhd_bytes }}) |"
+            echo "| 压缩方式 | ${COMPRESSION} |"
+            echo "| 投递方式 | ${UPLOAD_TARGET} |"
+            echo
+            echo "### dist 目录"
+            echo
+            echo '```'
+            ls -l dist
+            echo '```'
+            [ -f dist/RESTORE.txt ] && { echo "### 分卷还原说明"; echo; cat dist/RESTORE.txt; }
+            echo
+            echo "> 默认账号 user / 密码 1234（**上真实机器前请改密**）。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload workflow artifact
+        if: env.UPLOAD_TARGET == 'artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ventoy-${{ steps.meta.outputs.release }}-${{ steps.meta.outputs.flavor }}-${{ github.run_number }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days || '7' }}
+
+      - name: Upload to GitHub Release
+        if: env.UPLOAD_TARGET == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag || github.ref_name }}"
+          case "$tag" in ''|main|master) tag="ventoy-image-$(date -u +%Y%m%d-%H%M%S)" ;; esac
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "Ventoy vDisk $tag" --notes "由 ${{ github.workflow }} #${{ github.run_number }} 自动生成。"
+          shopt -s nullglob
+          files=(dist/*)
+          gh release upload "$tag" "${files[@]}" --clobber
+          echo "已上传到 Release: $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: On failure, upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-diagnostics-${{ github.run_number }}
+          path: |
+            .build/ubuntu-ventoy.yaml
+            .build/vars.env
+            elements/ubuntu-ventoy-gnome/ventoy-data
+          if-no-files-found: ignore

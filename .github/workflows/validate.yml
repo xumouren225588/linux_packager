@@ -1,0 +1,44 @@
+name: Validate configuration
+
+# 不构建镜像的静态校验：能在几秒内抓出元素名写错、YAML 不合法、
+# package-installs 的 when 条件缺变量这类问题。
+
+on:
+  push:
+    paths-ignore: ["docs/**", "**/*.md"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install diskimage-builder (用于 dry-run)
+        run: |
+          python3 -m venv "$PWD/.venv-dib"
+          "$PWD/.venv-dib/bin/pip" install -q --upgrade pip diskimage-builder pyyaml
+
+      - name: Shell syntax + YAML + DIB dry-run
+        env:
+          DIB_VENV: ${{ github.workspace }}/.venv-dib
+        run: bash scripts/validate-config.sh
+
+      - name: Rendered definition sanity
+        run: |
+          test -s .build/ubuntu-ventoy.yaml
+          "$PWD/.venv-dib/bin/python3" tools/check-definition.py .build/ubuntu-ventoy.yaml
+
+      - name: Shellcheck（有则跑）
+        if: always()
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -x -e SC1091,SC2034,SC2086 scripts/*.sh elements/*/finalise.d/* || true
+          else
+            echo "runner 无 shellcheck，跳过"
+          fi
