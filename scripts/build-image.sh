@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 调用 diskimage-builder 构建整盘 VHD。必须以 root 运行（DIB 要用 loop 设备与 chroot）。
-#   sudo -E env "PATH=$PATH" bash scripts/build-image.sh
+#   sudo env "PATH=$PATH" "BUILD_DIR=$BUILD_DIR" bash scripts/build-image.sh
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -11,7 +11,8 @@ CONFIG=${CONFIG:-$BUILD_DIR/ubuntu-ventoy.yaml}
 DIB_VENV=${DIB_VENV:-$REPO_ROOT/.venv-dib}
 
 if [ "$(id -u)" != "0" ]; then
-    echo "需要 root 权限：请用 sudo -E env \"PATH=\$PATH\" bash scripts/build-image.sh" >&2
+    echo "需要 root 权限：请用 sudo env \"PATH=\$PATH\" bash scripts/build-image.sh" >&2
+    echo "（GitHub runner 的 sudoers 不支持 sudo -E，变量请用 sudo env 显式传入）" >&2
     exit 1
 fi
 

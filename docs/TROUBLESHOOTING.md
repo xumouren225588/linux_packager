@@ -35,6 +35,26 @@ grep ELEMENTS_PATH .build/ubuntu-ventoy.yaml
 定义的 `environment` 中，否则 DIB 直接抛异常。模板里已经固定注入该变量；自己加
 `when:` 条件时记得同时加变量默认值。
 
+### `vhd output format specified but no vhd-util executable found`
+DIB 的 `vhd` 输出类型要调用外部 `vhd-util`（来自 Xen 工具链），Ubuntu/Debian 官方仓库
+里没有这个包，所以托管 runner 上一启动就退出。
+
+本仓库的默认路线已经绕开它：镜像定义用 `types: ["raw"]`，DIB 产出整盘裸镜像，
+`scripts/postprocess.sh` 再用 `qemu-img convert -f raw -O vpc -o subformat=fixed`
+直接得到固定大小 VHD —— 比"先动态 vhd 再固定化"少一遍全盘读写，交付物完全一样。
+
+如果你确实需要 DIB 直接产出 vhd：自行编译安装 vhd-util，然后传 `output_format: vhd`；
+`render-config.sh` 检测不到 `vhd-util` 时会自动降级回 raw 并打警告，不会让流水线失败。
+
+### 日志里出现 `sudo: preserving the entire environment is not supported, '-E' is ignored`
+GitHub runner 的 sudoers 不允许 `-E`。这条本身不是错误（流水线靠显式 `sudo env "K=V"`
+传变量，已在 workflow 里写好），但看到它就说明某处脚本还在指望 `-E` 继承环境，
+把需要的变量改成显式传递即可。
+
+### `E: Unable to locate package linux-modules-extra-generic`
+Ubuntu 24.04 没有这个包名，`linux-modules-extra-*` 只有带内核版本号的实例包。
+仓库里已改为依赖 meta 包 `linux-generic`。自己加内核相关包时同理，优先用 meta 包。
+
 ### `could not find an unused loop device` / `losetup: ... failed`
 构建机 loop 设备不够或没权限：
 
@@ -112,6 +132,18 @@ bash /usr/local/share/vtoyboot/vtoyboot.sh
 - 确认 vDisk 内 initramfs 有 virtio 驱动：
   `lsinitramfs /boot/initrd.img-$(uname -r) | grep virtio_blk`。
   缺了就补 `/etc/initramfs-tools/modules` 后 `sudo update-initramfs -u`。
+
+### 镜像做得出来，但 Ventoy 上选它就卡住 / 报找不到分区
+十有八九是固定化时漏了 `force_size`。qemu-img 会把 VHD 容量按 CHS 几何向上取整
+（实测 64 MiB → 67125248），整盘镜像的 GPT 备份头因此不再位于逻辑磁盘末尾，
+内核判定分区表损坏。确认方法：
+
+```bash
+python3 tools/check-vhd.py --expect-fixed xxx.vhd.vtoy
+```
+
+正常应输出 `GPT 主头/备份头位置正确`。若提示"逻辑磁盘末扇区没有备份 GPT"，
+重新用 `qemu-img convert -f raw -O vpc -o subformat=fixed,force_size` 转一次。
 
 ### 起来了但是进不了图形界面
 ```bash

@@ -15,12 +15,17 @@
 #      disk-image-create 没有 -c/--config 选项。
 #   3. BIOS Boot + ESP 由官方 block-device-gpt 元素提供，
 #      Legacy BIOS 与 UEFI 两种引导方式都能覆盖（Ventoy vDisk 两种都可能用到）。
-#   4. 这里产出的 VHD 是动态扩展格式；Ventoy 的 Linux vDisk 插件只认固定大小，
-#      固定化与 .vtoy 重命名由 scripts/postprocess.sh 完成。
+#   4. DIB 的 vhd 输出类型要求系统里存在 vhd-util，而 Ubuntu/Debian 官方仓库
+#      并不提供该包；GitHub 托管 runner 上会直接报
+#      "vhd output format specified but no vhd-util executable found"。
+#      所以默认走 raw：DIB 产出整盘裸镜像，再由 qemu-img 一次性转成固定大小 VHD。
+#      少一个外部依赖，也省掉"动态 VHD 再固定化"带来的翻倍磁盘读写。
+#   5. 无论 raw 还是 vhd，最终交付都给 scripts/postprocess.sh 固定化并改名 .vtoy，
+#      因为 Ventoy 的 Linux vDisk 插件只认固定大小 VHD。
 # =============================================================================
 
 - imagename: ${IMAGENAME}
-  types: ["vhd"]
+  types: ["${OUTPUT_FORMAT}"]          # raw（默认，无需 vhd-util）或 vhd
   image-size: ${IMAGE_SIZE}        # 单位 GB，整盘大小（含 BIOS Boot / ESP / root）
   arch: amd64
   no-tmpfs: true                   # 桌面镜像构建期内存吃紧，禁用 tmpfs 加速层

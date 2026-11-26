@@ -61,6 +61,32 @@ def read_footer(path: str) -> dict:
     }
 
 
+def check_gpt(info: dict) -> None:
+    """整盘镜像的 GPT 备份头必须落在逻辑磁盘的最后一个扇区。
+
+    qemu-img 不带 force_size 转换时会按 CHS 几何把容量向上取整，
+    备份头就脱离了末尾位置，内核会判定 GPT 损坏 —— 这是 Ventoy 上
+    "镜像做得出来却起不来" 的典型原因，所以在这里硬性检查。
+    """
+    path, cur = info["path"], info["current_size"]
+    if cur < 1024:
+        return
+    with open(path, "rb") as fh:
+        fh.seek(512)
+        primary = fh.read(8)
+        if primary != b"EFI PART":
+            print("  (未检测到 GPT 主头，跳过备份头位置检查)")
+            return
+        fh.seek(cur - 512)
+        backup = fh.read(8)
+    if backup != b"EFI PART":
+        print("FAIL: 主 GPT 在 LBA1，但逻辑磁盘末扇区没有备份 GPT（"
+              "VHD 容量与镜像分区表不一致，转换时请加 force_size）")
+        info["gpt_bad"] = True
+    else:
+        print("  GPT 主头/备份头位置正确")
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     expect_fixed = "--expect-fixed" in sys.argv[1:] or "--fixed" in sys.argv[1:]
@@ -77,12 +103,15 @@ def main() -> int:
             f"virtual={info['current_size']} file={info['file_size']}"
         )
         if info["is_fixed"]:
+            check_gpt(info)
             # 固定大小 VHD = 虚拟大小 + 512 字节 footer，一字节不多一字节不少
             if info["file_size"] != info["current_size"] + 512:
                 print(f"FAIL: 固定大小 VHD 文件大小应为 {info['current_size'] + 512}，实际 {info['file_size']}")
                 ok = False
             if info["data_offset"] != 0xFFFFFFFF:
                 print(f"FAIL: data_offset=0x{info['data_offset']:08X}，固定大小应为 0xFFFFFFFF")
+                ok = False
+            if info.get("gpt_bad"):
                 ok = False
         elif expect_fixed:
             print("FAIL: 这是动态扩展 VHD，Ventoy 的 Linux vDisk 插件启动不了，需要转成固定大小")

@@ -22,13 +22,17 @@ DIB 3.44 / qemu-img 实测验证。
 
 | # | 原始写法 | 问题 | 本仓库的做法 |
 | --- | --- | --- | --- |
-| 1 | YAML 里 `image-type: vhd` | DIB 的 YAML 定义**没有** `image-type` 这个键，输出格式是 `types`（列表），写错直接被 `diskimage-builder` 判为非法定义 | `types: ["vhd"]`，并用 `tools/check-definition.py` 白名单校验所有键 |
+| 1 | YAML 里 `image-type: vhd` | DIB 的 YAML 定义**没有** `image-type` 这个键，输出格式是 `types`（列表），写错直接被 `diskimage-builder` 判为非法定义 | 键名改成 `types`（本仓库取值是 `["raw"]`，原因见第 8 行），并用 `tools/check-definition.py` 白名单校验所有键 |
 | 2 | `disk-image-create -c ubuntu-ventoy.yaml` | `disk-image-create` 没有 `-c/--config` 选项；YAML 定义要用包装命令 | `diskimage-builder ubuntu-ventoy.yaml` |
 | 3 | 元素内假定能从 `/dib/<element>/` 取载荷 | DIB 3.x **没有**该机制。实测：`generate_hooks` 把元素的一级子目录复制进 hooks 目录，再由 `run_d_in_target` 只读 bind-mount 到 chroot 的 `/tmp/in_target.d` | 载荷目录 `ventoy-data/` → 镜像内 `/tmp/in_target.d/ventoy-data/`，构建期离线可用 |
 | 4 | 用 `qemu-img info` 判断是否 fixed | 固定大小 VHD 只有尾部 footer、没有文件头，qemu-img 自动探测会报 `format: raw`，据此校验必然误判 | `tools/check-vhd.py` 直接解析 footer 的 `disk_type`（2=Fixed）与 `data_offset=0xFFFFFFFF` |
 | 5 | 在 `finalise.d` 里直接跑 `vtoyboot.sh` 就算完 | vtoyboot 的前提是"运行在真实已启动的系统里"，在 DIB 的 chroot 中拿不到真实根设备，有可能判定失败并让整条 CI 挂掉 | 构建期试跑；失败则安装一次性 systemd 服务，在 Ventoy 上第一次真实启动时自动补齐钩子 |
 | 6 | 在 `finalise.d` 里手写 `apt-get install` | 绕开了 DIB 的分层，包缓存与 `--no-install-recommends` 策略不可控 | 改用 `package-installs.yaml` 声明式安装，桌面变体用 `when:` 条件切换 |
 | 7 | 账号密码明文写在 YAML | 密码进 git 历史 | 默认值仅为跑通，正式使用走 Repository Secrets（`VENTOY_USERNAME` / `VENTOY_PASSWORD`） |
+| 8 | 直接用 `-t vhd` 产出镜像 | **DIB 的 vhd 输出类型要求系统里有 `vhd-util`**，Ubuntu/Debian 官方仓库不提供该包，托管 runner 上秒挂（`vhd output format specified but no vhd-util executable found`） | 默认改用 `types: ["raw"]`，由 `postprocess.sh` 用 qemu-img 一次转成固定大小 VHD；还省掉"动态 VHD 再固定化"的翻倍磁盘读写 |
+| 9 | 在 `finalise.d` 里 `sudo -E` 保留环境 | GitHub runner 的 sudoers 禁止保留环境，日志出现 `sudo: preserving the entire environment is not supported, '-E' is ignored` | 统一改成 `sudo env "PATH=$PATH" "VAR=$VAR"` 显式传参，不依赖 `-E` |
+| 11 | `qemu-img convert -o subformat=fixed`（不带 `force_size`） | **实测会被按 CHS 几何向上取整**：64 MiB 的 raw 变成 67125248 字节，导致整盘镜像的 GPT 备份头不再位于逻辑磁盘末尾，内核判定分区表损坏，Ventoy 上直接起不来 | 固定化统一用 `-o subformat=fixed,force_size`，`check-vhd.py` 额外校验 GPT 主/备头位置（自检里还带一个反向用例，确保漏写 force_size 会被拒绝） |
+| 10 | `package-installs.yaml` 写 `linux-modules-extra-generic` | 该包名在 Ubuntu 24.04 里不存在（`modules-extra` 只有带内核版本号的实例包），apt 会直接 `Unable to locate package` | 换成 meta 包 `linux-generic` + `linux-headers-generic`，由依赖关系自动带上匹配版本的 modules 包 |
 
 另外两点属于体验修正：镜像内做清理 + 压缩（20 GB 固定 VHD 的零区能被压掉一大半）、
 以及提供分卷以绕开单文件大小限制。
@@ -98,6 +102,7 @@ bash scripts/validate-config.sh
 | `ubuntu_release` | `noble` | `noble`=24.04 LTS，`jammy`=22.04 LTS |
 | `desktop` | `gnome` | `gnome` / `xfce` / `none`（纯命令行） |
 | `image_size` | `20` | 整盘 GB。**最终是固定大小 VHD，这个数直接决定工件体积** |
+| `output_format` | `raw` | DIB 输出格式。`raw` 无外部依赖（推荐）；`vhd` 需要系统装有 `vhd-util`，缺失时自动降级回 raw |
 | `vtoyboot_version` | `latest` | 可钉具体版本（如 `1.0.42`）保证可复现 |
 | `compression` | `zstd` | `zstd` / `xz` / `none` |
 | `split_size_mb` | `0` | 非 0 时按 MiB 分卷，绕开单文件大小限制 |
@@ -110,8 +115,8 @@ bash scripts/validate-config.sh
 
 ```bash
 # Ubuntu 22.04 / 24.04，需要 root（DIB 要用 loop 设备与 chroot），建议 ≥40GB 空闲磁盘
-UBUNTU_RELEASE=noble DESKTOP=gnome IMAGE_SIZE=20 \
-  sudo -E env "PATH=$PATH" bash scripts/build-all.sh
+UBUNTU_RELEASE=noble DESKTOP=gnome IMAGE_SIZE=20 OUTPUT_FORMAT=raw \
+  sudo env "PATH=$PATH" "BUILD_DIR=$PWD/.build" bash scripts/build-all.sh
 ```
 
 产物在 `.build/out/dist/`。
@@ -182,6 +187,7 @@ python3 tools/check-vhd.py --expect-fixed xxx.vhd.vtoy   # 确认仍是 fixed VH
 | `UBUNTU_RELEASE` | `noble` | DIB_RELEASE |
 | `DESKTOP` | `gnome` | `gnome` / `xfce` / `none` |
 | `IMAGE_SIZE` | `20` | 整盘 GB |
+| `OUTPUT_FORMAT` | `raw` | DIB 输出格式（`raw` / `qcow2` / `vhd`，vhd 缺 vhd-util 时降级） |
 | `DEV_USERNAME` / `DEV_PASSWORD` | `user` / `1234` | 镜像内账号 |
 | `VTOYBOOT_VERSION` | `latest` | vtoyboot 版本 |
 | `DIB_VERSION` | 空 | 钉 diskimage-builder 版本 |

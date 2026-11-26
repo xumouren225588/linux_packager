@@ -38,8 +38,9 @@ def main() -> int:
         if unknown:
             errors.append(f"{name}: 存在 DIB 不认识的键 {unknown}（输出格式请用 types 列表）")
 
-        if img.get("types") != ["vhd"]:
-            errors.append(f"{name}: types 应为 [\"vhd\"]，当前是 {img.get('types')}")
+        types = img.get("types")
+        if types not in (["raw"], ["vhd"], ["qcow2"]):
+            errors.append(f"{name}: types 应为 [\"raw\"] / [\"vhd\"] / [\"qcow2\"]，当前是 {types}")
         if not isinstance(img.get("image-size"), int):
             errors.append(f"{name}: image-size 必须是整数（GB）")
 

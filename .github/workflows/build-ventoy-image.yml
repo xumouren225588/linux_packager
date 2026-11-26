@@ -24,6 +24,11 @@ on:
         description: 整盘大小（GB）。最终是固定大小 VHD，直接决定工件体积
         type: string
         default: "20"
+      output_format:
+        description: DIB 输出格式。raw 无需 vhd-util（推荐）；vhd 需要系统装有 vhd-util
+        type: choice
+        default: raw
+        options: [raw, vhd, qcow2]
       vtoyboot_version:
         description: vtoyboot 版本（latest 或形如 1.0.42）
         type: string
@@ -75,6 +80,7 @@ env:
   UBUNTU_RELEASE: ${{ inputs.ubuntu_release || 'noble' }}
   DESKTOP: ${{ inputs.desktop || 'gnome' }}
   IMAGE_SIZE: ${{ inputs.image_size || '20' }}
+  OUTPUT_FORMAT: ${{ inputs.output_format || 'raw' }}
   VTOYBOOT_VERSION: ${{ inputs.vtoyboot_version || 'latest' }}
   COMPRESSION: ${{ inputs.compression || 'zstd' }}
   SPLIT_MB: ${{ inputs.split_size_mb || '0' }}
@@ -90,14 +96,12 @@ jobs:
   build:
     name: Build Ventoy vDisk
     runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    timeout-minutes: 300
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: install qemu-img
-        run: |
-          sudo apt update
-          sudo apt install -y qemu-utils
+
       - name: Show runner environment
         run: |
           echo "runner: $(lsb_release -ds)  kernel: $(uname -r)"
@@ -126,18 +130,28 @@ jobs:
 
       - name: Validate definition (dry-run)
         run: |
-          export DIB_VENV
-          sudo -E env "PATH=$PATH" "DIB_VENV=$DIB_VENV" "BUILD_DIR=$BUILD_DIR" \
-            DRY_RUN=1 bash scripts/build-image.sh | tail -n 5
+          # dry-run 只是解析元素与打印最终命令，不需要 root
+          "$DIB_VENV/bin/diskimage-builder" --dry-run "$BUILD_DIR/ubuntu-ventoy.yaml" | tail -n 3
 
       - name: Build image with diskimage-builder
         run: |
-          sudo -E env "PATH=$PATH" "HOME=$HOME" "BUILD_DIR=$BUILD_DIR" \
-            "DIB_VENV=$DIB_VENV" bash scripts/build-image.sh
+          # GitHub runner 的 sudoers 禁止 sudo -E（会提示 preserving the entire
+          # environment is not supported, -E is ignored），所以变量一律显式传给 sudo env
+          sudo env "PATH=$PATH" "HOME=$HOME" "BUILD_DIR=$BUILD_DIR" \
+            "DIB_VENV=$DIB_VENV" "OUTPUT_FORMAT=$OUTPUT_FORMAT" \
+            bash scripts/build-image.sh
 
       - name: Convert to fixed-size VHD + .vtoy
         run: |
-          src=$(ls -1 "$BUILD_DIR"/out/*.vhd | head -n1)
+          set -a; . "$BUILD_DIR/vars.env"; set +a
+          src=""
+          for cand in "$IMAGENAME.raw" "$IMAGENAME.img" "$IMAGENAME.vhd" "$IMAGENAME.qcow2"; do
+              [ -f "$cand" ] && src="$cand" && break
+          done
+          if [ -z "$src" ]; then
+              src=$(ls -1 "$BUILD_DIR"/out/*.raw "$BUILD_DIR"/out/*.vhd "$BUILD_DIR"/out/*.qcow2 2>/dev/null | head -n1)
+          fi
+          [ -n "$src" ] || { echo "找不到 DIB 产物"; ls -lR "$BUILD_DIR/out"; exit 1; }
           echo "DIB 原始产物: $src"
           bash scripts/postprocess.sh "$src" "$BUILD_DIR/out"
 

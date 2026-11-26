@@ -20,5 +20,12 @@ else
     "$DIB_VENV/bin/pip" install diskimage-builder
 fi
 
+# vhd-util 只在选择 OUTPUT_FORMAT=vhd 时才需要；Ubuntu/Debian 仓库通常没有该包，
+# 缺省时 render-config.sh 会自动降级为 raw，所以这里装不上也不算错误。
+if ! command -v vhd-util >/dev/null 2>&1; then
+    sudo apt-get install -y --no-install-recommends vhd-util >/dev/null 2>&1 \
+        || echo "提示：无 vhd-util，DIB 输出将使用 raw（后处理仍产出固定大小 VHD）"
+fi
+
 echo "已安装：$("$DIB_VENV/bin/disk-image-create" --version)"
 df -h | sed -n '1,3p'

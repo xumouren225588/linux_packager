@@ -7,8 +7,12 @@
 # --- 基础 ---
 ca-certificates: null
 curl: null
-linux-image-generic: null
-linux-modules-extra-generic: null
+# 用 linux-generic 这个 meta 包：它会带上 linux-image-generic 与对应的
+# linux-modules-* / linux-modules-extra-* 版本化包。
+# 注意不要写 linux-modules-extra-generic —— Ubuntu 24.04 里没有这个包名
+# （modules-extra 只有带内核版本号的实例包），写了 apt 会直接 Unable to locate package。
+linux-generic: null
+linux-headers-generic: null
 landscape-common:
   uninstall: true
 

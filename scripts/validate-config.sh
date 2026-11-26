@@ -51,12 +51,32 @@ fi
 echo "== 6. VHD footer 工具自检（构造 fixed VHD 后验证解析）=="
 if command -v qemu-img >/dev/null 2>&1; then
     tmpd=$(mktemp -d)
-    dd if=/dev/zero of=$tmpd/z bs=1M count=8 status=none
-    qemu-img convert -f raw -O vpc -o subformat=fixed $tmpd/z $tmpd/t.vhd
-    if python3 tools/check-vhd.py --expect-fixed $tmpd/t.vhd; then
-        :
+    # 造一个含 GPT 主/备头的 raw 整盘镜像，模拟 DIB 的真实输出
+    python3 - "$tmpd/gpt.raw" <<'GPT'
+import sys
+SIZE, SECT = 8 * 1024 * 1024, 512
+last = SIZE // SECT - 1
+buf = bytearray(SIZE)
+buf[0x1C2] = 0xEE; buf[510:512] = b"\x55\xAA"
+for lba in (1, last):
+    h = bytearray(SECT); h[0:8] = b"EFI PART"
+    h[16:24] = lba.to_bytes(8, "little")
+    h[24:32] = (last if lba == 1 else 1).to_bytes(8, "little")
+    buf[lba * SECT:lba * SECT + SECT] = h
+open(sys.argv[1], "wb").write(buf)
+GPT
+    qemu-img convert -f raw -O vpc -o subformat=fixed,force_size $tmpd/gpt.raw $tmpd/t.vhd
+    if python3 tools/check-vhd.py --expect-fixed $tmpd/t.vhd | grep -q "GPT 主头/备份头位置正确"; then
+        echo "  OK  fixed VHD + GPT 位置校验通过"
     else
-        echo "  ERR check-vhd.py 未能识别刚生成的固定大小 VHD"; fail=1
+        echo "  ERR 固定大小转换或 GPT 位置校验未通过"; fail=1
+    fi
+    # 反向用例：不带 force_size 时容量会被放大，必须被检查器拒绝
+    qemu-img convert -f raw -O vpc -o subformat=fixed $tmpd/gpt.raw $tmpd/bad.vhd
+    if python3 tools/check-vhd.py --expect-fixed $tmpd/bad.vhd >/dev/null 2>&1; then
+        echo "  ERR 缺少 force_size 的镜像本应被拒绝"; fail=1
+    else
+        echo "  OK  不带 force_size 的镜像被正确拒绝"
     fi
     rm -rf $tmpd
 else
